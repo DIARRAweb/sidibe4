@@ -10114,6 +10114,22 @@ function showTransferReceipt(data, mode="success"){
   box.classList.remove("hidden");
 }
 
+function addFeesToTreasury(treasury, feeType, serviceFee, startupFee){
+  if(!treasury.national) treasury.national = {rate:0.01,balance:0};
+  if(!treasury.international) treasury.international = {rate:0.015,balance:0};
+  if(!treasury.startup) treasury.startup = {rate:0.005,balance:0};
+
+  if(feeType === "national"){
+    treasury.national.balance = Number(treasury.national.balance || 0) + Number(serviceFee || 0);
+  }else{
+    treasury.international.balance = Number(treasury.international.balance || 0) + Number(serviceFee || 0);
+  }
+
+  treasury.startup.balance = Number(treasury.startup.balance || 0) + Number(startupFee || 0);
+
+  return treasury;
+}
+
 window.sendMoney=async function(){
 
 if(sendBtn.disabled) return;
@@ -10202,6 +10218,8 @@ receiverPhone.startsWith("+223");
 /* 🌍 international ? */
 const isInternational =
 !sameCountry;
+
+const feeType = sameCountry ? "national" : "international";
 
 /* ===== TAUX ===== */
 let serviceRate = 0;
@@ -10344,6 +10362,7 @@ pendingTransfer = {
   senderCur,
   receiverCur,
   totalDebit,
+  feeType,
   customID
 };
 
@@ -10422,7 +10441,17 @@ window.confirmPendingTransfer = async function(){
   await update(ref(db,"users/"+p.receiverPhone), {
     solde: newReceiverSolde
   });
-  await update(ref(db,"treasury"), p.treasury);
+  const treasurySnap = await get(ref(db,"treasury"));
+let freshTreasury = treasurySnap.exists() ? treasurySnap.val() : p.treasury;
+
+freshTreasury = addFeesToTreasury(
+  freshTreasury,
+  p.feeType,
+  p.serviceFee,
+  p.startupFee
+);
+
+await update(ref(db,"treasury"), freshTreasury);
 
   const tx = await push(ref(db,"history/"+currentUser.phone),{
     customID:p.customID,
@@ -10593,6 +10622,7 @@ window.sendScheduledMoney = async function(){
     const senderCountry = getCountry(sender.phone).name;
     const receiverCountry = getCountry(receiverPhone).name;
     const sameCountry = senderCountry === receiverCountry;
+    const feeType = sameCountry ? "national" : "international";
     const isMaliSender = sender.phone.startsWith("+223");
 
     let serviceRate = sameCountry
@@ -10639,6 +10669,7 @@ window.sendScheduledMoney = async function(){
       reason,
       scheduleDate,
       repeatType,
+      feeType,
       totalDebit
     };
 
@@ -10690,6 +10721,7 @@ window.confirmPendingScheduledTransfer = async function(){
     startupFee:p.startupFee,
     totalFees:p.totalFees,
     totalDebit:p.totalDebit,
+    feeType:p.feeType,
 
     rateUsed:p.rate,
     senderCurrency:p.senderCur.code,
@@ -10964,7 +10996,14 @@ async function processScheduledTransfers(){
         solde:receiver.solde
       });
 
-      await update(ref(db,"treasury"), treasury);
+      treasury = addFeesToTreasury(
+  treasury,
+  tx.feeType || "national",
+  tx.serviceFee || 0,
+  tx.startupFee || 0
+);
+
+await update(ref(db,"treasury"), treasury);
 
       const historyRef = await push(ref(db,"history/" + tx.from), {
         customID:tx.customID,
