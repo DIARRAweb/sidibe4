@@ -7266,6 +7266,45 @@ button {
     font-size:9.5px !important;
   }
 }
+
+/* 🔐 Suppression coffre */
+.vault-delete-confirm{
+  margin-top:12px;
+  padding:14px;
+  border-radius:20px;
+  background:linear-gradient(145deg,#fff,#ffe9e9);
+  border:1px solid rgba(217,4,41,.25);
+  color:#222;
+  text-align:center;
+  box-shadow:0 14px 30px rgba(0,0,0,.14);
+}
+
+.vault-delete-confirm p{
+  margin:0 0 12px;
+  font-weight:950;
+  color:#d90429;
+}
+
+.vault-delete-actions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+
+.vault-delete-actions button{
+  margin-top:0 !important;
+  min-height:42px !important;
+  border-radius:15px !important;
+  font-weight:950 !important;
+}
+
+.vault-delete-yes{
+  background:linear-gradient(135deg,#d90429,#8b0000) !important;
+}
+
+.vault-delete-no{
+  background:linear-gradient(135deg,#2563eb,#1d4ed8) !important;
+}
 </style>
 </head>
 
@@ -7502,7 +7541,11 @@ button {
           </p>
 
           <button id="clearNotifBtn" class="send-btn" onclick="clearAllNotifications()">
-        🧹 Vider la messagerie
+            🧹 Vider la messagerie
+          </button>
+
+      <button class="send-btn" onclick="changeNotificationSound()">
+        🔊 Changer le son de notification
       </button>
 
       <div id="notifList" class="notif-list"></div>
@@ -7678,16 +7721,29 @@ Modifier mot de passe
         <h2>Coffre-fort</h2>
         <p>Crée, bloque ou retire ton argent simplement</p>
       </div>
-      <button onclick="showCreateVaultForm()" class="vault-create-btn">➕</button>
+      <button id="vaultCreateToggleBtn" onclick="showCreateVaultForm()" class="vault-create-btn">➕</button>
     </div>
 
     <div id="vaultCreateForm" class="vault-action-card hidden">
       <label>Nom du coffre</label>
       <input id="newVaultName" placeholder="Ex: Projet, Épargne, Famille">
-      <button onclick="createVault()">Créer le coffre</button>
+      <button id="createVaultBtn" onclick="createVault()">Créer le coffre</button>
     </div>
 
     <div id="vaultList"></div>
+
+    <div class="vault-help">
+  Maintiens un coffre pendant 3 secondes pour afficher l’option supprimer.
+</div>
+
+<div id="vaultDeleteConfirm" class="vault-delete-confirm hidden">
+  <p id="vaultDeleteText">Supprimer ce coffre ?</p>
+
+  <div class="vault-delete-actions">
+    <button id="confirmDeleteVaultBtn" class="vault-danger">Oui, supprimer</button>
+    <button id="cancelDeleteVaultBtn" class="vault-secondary">Non</button>
+  </div>
+</div>
 
     <div id="vaultActionPanel" class="vault-action-card hidden">
       <h3 id="activeVaultTitle"></h3>
@@ -9981,22 +10037,31 @@ document.getElementById("toggleBalance").onclick = async function(){
 /* ===== CONVERSION LIVE VISUELLE ===== */
 
 async function updateConversion(){
-const receiverPhone=normalizeReceiverPhoneSmart(receiverInput.value.trim());
-const amount=parseFloat(amountInput.value);
-if(!receiverPhone || !amount){ conversionBox.style.display="none"; return; }
+  const receiverPhone = normalizeReceiverPhoneSmart(receiverInput.value.trim());
+  const amount = parseFloat(amountInput.value);
 
-const senderCur=getCurrency(currentUser.phone);
-const receiverCur=getCurrency(receiverPhone);
+  if(!receiverPhone || !amount){
+    conversionBox.style.display = "none";
+    return;
+  }
 
-const rate=await getLiveRate(senderCur.code,receiverCur.code);
-if(!rate){ conversionBox.style.display="none"; return; }
+  const senderCur = getCurrency(currentUser.phone);
+  const receiverCur = getCurrency(receiverPhone);
+  const rate = await getLiveRate(senderCur.code, receiverCur.code);
 
-const converted=amount*rate;
+  if(!rate){
+    conversionBox.style.display = "none";
+    return;
+  }
 
-conversionBox.style.display="block";
-conversionBox.innerHTML=
-`💱 1 ${senderCur.symbol} = ${rate.toFixed(4)} ${receiverCur.symbol}<br>
-💰 Destinataire recevra : <strong>${formatMoney(converted)} ${receiverCur.symbol}</strong>`;
+  const converted = amount * rate;
+
+  conversionBox.style.display = "block";
+  conversionBox.innerHTML = `
+    💱 1 ${senderCur.symbol} = ${rate.toFixed(4)} ${receiverCur.symbol}<br>
+    💰 Destinataire recevra :
+    <strong>${formatMoney(converted, receiverCur)}</strong>
+  `;
 }
 
 /* =========================
@@ -10062,6 +10127,8 @@ window.closeReceipt = function(){
 };
 
 let pendingTransfer = null;
+let transferConfirmRunning = false;
+let scheduledConfirmRunning = false;
 
 function showTransferReceipt(data, mode="success"){
 
@@ -10394,136 +10461,146 @@ resetButton();
 };
 
 window.confirmPendingTransfer = async function(){
-  if(!pendingTransfer) return;
+  if(!pendingTransfer || transferConfirmRunning) return;
+
+  transferConfirmRunning = true;
+
+  const confirmBtn = document.querySelector("#receiptContent .receipt-actions button");
+  if(confirmBtn){
+    confirmBtn.disabled = true;
+    confirmBtn.innerText = "⏳ Confirmation...";
+  }
 
   const p = pendingTransfer;
-
-  const senderSnap = await get(ref(db, "users/" + p.sender.phone));
-  const receiverSnap = await get(ref(db, "users/" + p.receiverPhone));
-
-  if(!senderSnap.exists() || !receiverSnap.exists()){
-    alert("❌ Compte introuvable");
-    pendingTransfer = null;
-    return;
-  }
-
-  const freshSender = senderSnap.val();
-  const freshReceiver = receiverSnap.val();
-
-  const disponible =
-    Number(freshSender.solde || 0) -
-    Number(freshSender.frozenBalance || 0);
-
-  if(disponible < Number(p.totalDebit || 0)){
-    alert("❌ Solde insuffisant. Le transfert est annulé.");
-    pendingTransfer = null;
-    closeReceipt();
-    return;
-  }
-
-  const newSenderSolde =
-    Number(freshSender.solde || 0) - Number(p.totalDebit || 0);
-
-  const newReceiverSolde =
-    Number(freshReceiver.solde || 0) + Number(p.convertedAmount || 0);
-
-  if(newSenderSolde < 0){
-    alert("❌ Opération refusée : solde négatif impossible.");
-    pendingTransfer = null;
-    closeReceipt();
-    return;
-  }
-
-  await update(ref(db,"users/"+p.sender.phone), {
-    solde: newSenderSolde
-  });
-
-  await update(ref(db,"users/"+p.receiverPhone), {
-    solde: newReceiverSolde
-  });
-  const treasurySnap = await get(ref(db,"treasury"));
-let freshTreasury = treasurySnap.exists() ? treasurySnap.val() : p.treasury;
-
-freshTreasury = addFeesToTreasury(
-  freshTreasury,
-  p.feeType,
-  p.serviceFee,
-  p.startupFee
-);
-
-await update(ref(db,"treasury"), freshTreasury);
-
-  const tx = await push(ref(db,"history/"+currentUser.phone),{
-    customID:p.customID,
-    from:p.sender.phone,
-    to:p.receiverPhone,
-    amountOriginal:p.amount,
-    amountConverted:p.convertedAmount,
-    serviceFee:p.serviceFee,
-    startupFee:p.startupFee,
-    totalFees:p.totalFees,
-    rateUsed:p.rate,
-    reason:p.reason,
-    date:new Date().toLocaleString(),
-    createdAt:Date.now()
-  });
-
-  await push(ref(db,"history/"+p.receiverPhone),{
-    customID:p.customID,
-    from:p.sender.phone,
-    to:p.receiverPhone,
-    amountOriginal:p.convertedAmount,
-    date:new Date().toLocaleString(),
-    createdAt:Date.now(),
-    type:"received"
-  });
-
-  await push(ref(db,"notifications/"+p.receiverPhone),{
-    title:"💰Argent reçu",
-    phone:p.sender.phone,
-    amount:p.convertedAmount,
-    currency:p.receiverCur.code,
-    symbol:p.receiverCur.symbol,
-    reason:p.reason,
-    date:new Date().toLocaleString(),
-    claimable:false,
-    seen:false
-  });
-
-  await push(ref(db,"notifications/"+p.sender.phone),{
-    title:"📤Argent envoyé",
-    phone:p.receiverPhone,
-    amount:p.amount,
-    currency:p.senderCur.code,
-    symbol:p.senderCur.symbol,
-    reason:p.reason,
-    date:new Date().toLocaleString(),
-    claimable:true,
-    seen:false,
-    txId:tx.key
-  });
-
-  showTransferReceipt({
-    receiverName:p.receiverData.name || "Destinataire",
-    receiverPhoto:p.receiverData.photo || "",
-    receiverPhone:p.receiverPhone,
-    amountOriginal:formatMoney(p.amount,p.senderCur),
-    amountConverted:formatMoney(p.convertedAmount,p.receiverCur),
-    serviceFee:formatMoney(p.serviceFee,p.senderCur),
-    startupFee:formatMoney(p.startupFee,p.senderCur),
-    totalFees:formatMoney(p.totalFees,p.senderCur),
-    rateUsed:p.rate,
-    newBalance:formatMoney(p.sender.solde,p.senderCur),
-    customID:p.customID
-  }, "success");
-
   pendingTransfer = null;
 
-  messageBox.innerText=(translations[getUserLang()] || translations.fr).transferSuccess;
+  try{
+    const senderSnap = await get(ref(db, "users/" + p.sender.phone));
+    const receiverSnap = await get(ref(db, "users/" + p.receiverPhone));
 
-  resetForm();
-  loadNotifications();
-  resetButton();
+    if(!senderSnap.exists() || !receiverSnap.exists()){
+      alert("❌ Compte introuvable");
+      closeReceipt();
+      return;
+    }
+
+    const freshSender = senderSnap.val();
+    const freshReceiver = receiverSnap.val();
+
+    const disponible =
+      Number(freshSender.solde || 0) -
+      Number(freshSender.frozenBalance || 0);
+
+    if(disponible < Number(p.totalDebit || 0)){
+      alert("❌ Solde insuffisant. Le transfert est annulé.");
+      closeReceipt();
+      return;
+    }
+
+    const newSenderSolde = Number(freshSender.solde || 0) - Number(p.totalDebit || 0);
+    const newReceiverSolde = Number(freshReceiver.solde || 0) + Number(p.convertedAmount || 0);
+
+    if(newSenderSolde < 0){
+      alert("❌ Opération refusée : solde négatif impossible.");
+      closeReceipt();
+      return;
+    }
+
+    await update(ref(db,"users/"+p.sender.phone), {
+      solde: newSenderSolde
+    });
+
+    await update(ref(db,"users/"+p.receiverPhone), {
+      solde: newReceiverSolde
+    });
+
+    const treasurySnap = await get(ref(db,"treasury"));
+    let freshTreasury = treasurySnap.exists() ? treasurySnap.val() : p.treasury;
+
+    freshTreasury = addFeesToTreasury(
+      freshTreasury,
+      p.feeType,
+      p.serviceFee,
+      p.startupFee
+    );
+
+    await update(ref(db,"treasury"), freshTreasury);
+
+    const tx = await push(ref(db,"history/"+currentUser.phone),{
+      customID:p.customID,
+      from:p.sender.phone,
+      to:p.receiverPhone,
+      amountOriginal:p.amount,
+      amountConverted:p.convertedAmount,
+      serviceFee:p.serviceFee,
+      startupFee:p.startupFee,
+      totalFees:p.totalFees,
+      rateUsed:p.rate,
+      reason:p.reason,
+      date:new Date().toLocaleString(),
+      createdAt:Date.now()
+    });
+
+    await push(ref(db,"history/"+p.receiverPhone),{
+      customID:p.customID,
+      from:p.sender.phone,
+      to:p.receiverPhone,
+      amountOriginal:p.convertedAmount,
+      date:new Date().toLocaleString(),
+      createdAt:Date.now(),
+      type:"received"
+    });
+
+    await push(ref(db,"notifications/"+p.receiverPhone),{
+      title:"💰Argent reçu",
+      phone:p.sender.phone,
+      amount:p.convertedAmount,
+      currency:p.receiverCur.code,
+      symbol:p.receiverCur.symbol,
+      reason:p.reason,
+      date:new Date().toLocaleString(),
+      claimable:false,
+      seen:false
+    });
+
+    await push(ref(db,"notifications/"+p.sender.phone),{
+      title:"📤Argent envoyé",
+      phone:p.receiverPhone,
+      amount:p.amount,
+      currency:p.senderCur.code,
+      symbol:p.senderCur.symbol,
+      reason:p.reason,
+      date:new Date().toLocaleString(),
+      claimable:true,
+      seen:false,
+      txId:tx.key
+    });
+
+    showTransferReceipt({
+      receiverName:p.receiverData.name || "Destinataire",
+      receiverPhoto:p.receiverData.photo || "",
+      receiverPhone:p.receiverPhone,
+      amountOriginal:formatMoney(p.amount,p.senderCur),
+      amountConverted:formatMoney(p.convertedAmount,p.receiverCur),
+      serviceFee:formatMoney(p.serviceFee,p.senderCur),
+      startupFee:formatMoney(p.startupFee,p.senderCur),
+      totalFees:formatMoney(p.totalFees,p.senderCur),
+      rateUsed:p.rate,
+      newBalance:formatMoney(newSenderSolde,p.senderCur),
+      customID:p.customID
+    }, "success");
+
+    messageBox.innerText = (translations[getUserLang()] || translations.fr).transferSuccess;
+
+    resetForm();
+    loadNotifications();
+    resetButton();
+
+  }catch(e){
+    alert("❌ Erreur : " + e.message);
+  }finally{
+    transferConfirmRunning = false;
+  }
 };
 
 window.pendingScheduledTransfer = null;
@@ -10703,74 +10780,90 @@ window.sendScheduledMoney = async function(){
    ✅ CONFIRMER PROGRAMMATION
 ================================ */
 window.confirmPendingScheduledTransfer = async function(){
-  if(!window.pendingScheduledTransfer) return;
+  if(!window.pendingScheduledTransfer || scheduledConfirmRunning) return;
 
-  const p = window.pendingScheduledTransfer;
+  scheduledConfirmRunning = true;
 
-  const data = {
-    customID:p.customID,
-    from:p.sender.phone,
-    to:p.receiverPhone,
-
-    receiverName:p.receiverData.name || "",
-    receiverPhoto:p.receiverData.photo || "",
-
-    amountOriginal:p.amount,
-    amountConverted:p.convertedAmount,
-    serviceFee:p.serviceFee,
-    startupFee:p.startupFee,
-    totalFees:p.totalFees,
-    totalDebit:p.totalDebit,
-    feeType:p.feeType,
-
-    rateUsed:p.rate,
-    senderCurrency:p.senderCur.code,
-    receiverCurrency:p.receiverCur.code,
-    senderSymbol:p.senderCur.symbol,
-    receiverSymbol:p.receiverCur.symbol,
-
-    reason:p.reason,
-    scheduledFor:p.scheduleDate,
-    nextRunAt:new Date(p.scheduleDate).getTime(),
-
-    repeatType:p.repeatType || "once",
-
-    active:true,
-    executed:false,
-    createdAt:Date.now(),
-    updatedAt:Date.now()
-  };
-
-  if(editingScheduledTransferId){
-    await update(ref(db,"scheduledTransfers/" + editingScheduledTransferId), data);
-    editingScheduledTransferId = null;
-  }else{
-    await push(ref(db,"scheduledTransfers"), data);
+  const confirmBtn = document.querySelector("#receiptContent .receipt-actions button");
+  if(confirmBtn){
+    confirmBtn.disabled = true;
+    confirmBtn.innerText = "⏳ Confirmation...";
   }
 
-  showTransferReceipt({
-    receiverName:p.receiverData.name || "Destinataire",
-    receiverPhoto:p.receiverData.photo || "",
-    receiverPhone:p.receiverPhone,
-    amountOriginal:formatMoney(p.amount,p.senderCur),
-    amountConverted:formatMoney(p.convertedAmount,p.receiverCur),
-    serviceFee:formatMoney(p.serviceFee,p.senderCur),
-    startupFee:formatMoney(p.startupFee,p.senderCur),
-    totalFees:formatMoney(p.totalFees,p.senderCur),
-    rateUsed:p.rate,
-    newBalance:"Sera débité à la date programmée",
-    customID:p.customID
-  }, "success");
-
-  document.getElementById("scheduledMessage").innerText =
-    editingScheduledTransferId
-      ? "✅ Transfert programmé modifié"
-      : "✅ Transfert programmé avec succès";
-
-  resetScheduledForm();
-  loadScheduledTransfersList();
-
+  const p = window.pendingScheduledTransfer;
   window.pendingScheduledTransfer = null;
+
+  const wasEditing = !!editingScheduledTransferId;
+
+  try{
+    const data = {
+      customID:p.customID,
+      from:p.sender.phone,
+      to:p.receiverPhone,
+
+      receiverName:p.receiverData.name || "",
+      receiverPhoto:p.receiverData.photo || "",
+
+      amountOriginal:p.amount,
+      amountConverted:p.convertedAmount,
+      serviceFee:p.serviceFee,
+      startupFee:p.startupFee,
+      totalFees:p.totalFees,
+      totalDebit:p.totalDebit,
+      feeType:p.feeType,
+
+      rateUsed:p.rate,
+      senderCurrency:p.senderCur.code,
+      receiverCurrency:p.receiverCur.code,
+      senderSymbol:p.senderCur.symbol,
+      receiverSymbol:p.receiverCur.symbol,
+
+      reason:p.reason,
+      scheduledFor:p.scheduleDate,
+      nextRunAt:new Date(p.scheduleDate).getTime(),
+
+      repeatType:p.repeatType || "once",
+
+      active:true,
+      executed:false,
+      createdAt:Date.now(),
+      updatedAt:Date.now()
+    };
+
+    if(editingScheduledTransferId){
+      await update(ref(db,"scheduledTransfers/" + editingScheduledTransferId), data);
+      editingScheduledTransferId = null;
+    }else{
+      await push(ref(db,"scheduledTransfers"), data);
+    }
+
+    showTransferReceipt({
+      receiverName:p.receiverData.name || "Destinataire",
+      receiverPhoto:p.receiverData.photo || "",
+      receiverPhone:p.receiverPhone,
+      amountOriginal:formatMoney(p.amount,p.senderCur),
+      amountConverted:formatMoney(p.convertedAmount,p.receiverCur),
+      serviceFee:formatMoney(p.serviceFee,p.senderCur),
+      startupFee:formatMoney(p.startupFee,p.senderCur),
+      totalFees:formatMoney(p.totalFees,p.senderCur),
+      rateUsed:p.rate,
+      newBalance:"Sera débité à la date programmée",
+      customID:p.customID
+    }, "success");
+
+    document.getElementById("scheduledMessage").innerText =
+      wasEditing
+        ? "✅ Transfert programmé modifié"
+        : "✅ Transfert programmé avec succès";
+
+    resetScheduledForm();
+    loadScheduledTransfersList();
+
+  }catch(e){
+    alert("❌ Erreur : " + e.message);
+  }finally{
+    scheduledConfirmRunning = false;
+  }
 };
 
 /* ===============================
@@ -11380,13 +11473,96 @@ function renderNotifications(snapshot){
   }
 }
 
+let lastNotifCount = 0;
+let notificationsStarted = false;
+
 function listenNotifications(){
   const notifRef = ref(db,"notifications/" + currentUser.phone);
 
   onValue(notifRef,(snapshot)=>{
+    let newCount = 0;
+
+    if(snapshot.exists()){
+      Object.values(snapshot.val()).forEach(n=>{
+        if(!n.seen) newCount++;
+      });
+    }
+
     renderNotifications(snapshot);
+
+    if(notificationsStarted && newCount > lastNotifCount){
+      playNotificationSound();
+    }
+
+    lastNotifCount = newCount;
+    notificationsStarted = true;
   });
 }
+
+function getNotificationSound(){
+  return localStorage.getItem("customNotifSound") ||
+         "https://actions.google.com/sounds/v1/alarms/beep_short.ogg";
+}
+
+document.addEventListener("click", ()=>{
+  const sound = document.getElementById("notifSound");
+  if(sound){
+    sound.src = getNotificationSound();
+    sound.play()
+      .then(()=>{
+        sound.pause();
+        sound.currentTime = 0;
+      })
+      .catch(()=>{});
+  }
+}, {once:true});
+
+let notifSoundStopTimer = null;
+
+function playNotificationSound(){
+  const sound = document.getElementById("notifSound");
+  if(!sound) return;
+
+  clearTimeout(notifSoundStopTimer);
+
+  sound.pause();
+  sound.currentTime = 0;
+  sound.src = getNotificationSound();
+  sound.volume = 1;
+
+  sound.play().catch(()=>{
+    console.log("Son bloqué jusqu'à une interaction utilisateur.");
+  });
+
+  notifSoundStopTimer = setTimeout(()=>{
+    sound.pause();
+    sound.currentTime = 0;
+  }, 4000);
+}
+
+window.changeNotificationSound = function(){
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "audio/*";
+
+  input.onchange = function(e){
+    const file = e.target.files[0];
+    if(!file) return;
+
+    const url = URL.createObjectURL(file);
+    localStorage.setItem("customNotifSound", url);
+
+    const sound = document.getElementById("notifSound");
+    if(sound){
+      sound.src = url;
+      sound.play().catch(()=>{});
+    }
+
+    alert("✅ Son de notification changé sur cet appareil");
+  };
+
+  input.click();
+};
 
 listenNotifications();
 listenWithdrawRequests();
@@ -12350,6 +12526,8 @@ setTimeout(()=>toast.remove(),3000);
 ========================= */
 
 let selectedVaultId = null;
+let vaultLongPressTimer = null;
+let vaultDeleteTargetId = null;
 
 function getUserVaults(user){
   return user.vaults || {};
@@ -12357,6 +12535,45 @@ function getUserVaults(user){
 
 window.showCreateVaultForm = function(){
   document.getElementById("vaultCreateForm").classList.toggle("hidden");
+};
+
+window.createVault = async function(){
+  const nameInput = document.getElementById("newVaultName");
+  const btn = document.getElementById("createVaultBtn");
+  const name = nameInput.value.trim();
+
+  if(!name){
+    alert("❌ Donne un nom au coffre");
+    return;
+  }
+
+  if(btn){
+    btn.disabled = true;
+    btn.innerText = "⏳ Création...";
+  }
+
+  try{
+    const id = "vault_" + Date.now();
+
+    await update(ref(db, "users/" + currentUser.phone + "/vaults/" + id), {
+      name,
+      balance: 0,
+      lockedUntil: 0,
+      createdAt: Date.now(),
+      unlockRequest: null
+    });
+
+    nameInput.value = "";
+    document.getElementById("vaultCreateForm").classList.add("hidden");
+
+    await loadVaultStatus();
+
+  }finally{
+    if(btn){
+      btn.disabled = false;
+      btn.innerText = "Créer le coffre";
+    }
+  }
 };
 
 async function loadVaultStatus(){
@@ -12367,20 +12584,15 @@ async function loadVaultStatus(){
   const vaults = getUserVaults(user);
   const cur = getCurrency(currentUser.phone);
   const list = document.getElementById("vaultList");
-const panel = document.getElementById("vaultActionPanel");
+  const panel = document.getElementById("vaultActionPanel");
 
-/* 🔥 IMPORTANT :
-   Avant de vider vaultList, on récupère la fiche.
-   Sinon innerHTML="" supprime la fiche du DOM.
-*/
-if(panel && list.contains(panel)){
-  document.querySelector("#vaultBox .vault-dashboard").appendChild(panel);
-  panel.classList.add("hidden");
-  panel.classList.remove("vault-panel-opening", "vault-panel-closing");
-}
+  if(panel && list.contains(panel)){
+    document.querySelector("#vaultBox .vault-dashboard").appendChild(panel);
+    panel.classList.add("hidden");
+  }
 
-selectedVaultId = null;
-list.innerHTML = "";
+  selectedVaultId = null;
+  list.innerHTML = "";
 
   if(Object.keys(vaults).length === 0){
     list.innerHTML = `
@@ -12396,15 +12608,21 @@ list.innerHTML = "";
     const locked = vault.lockedUntil && Date.now() < vault.lockedUntil;
 
     list.innerHTML += `
-      <div class="vault-item" data-vault-id="${id}" onclick="selectVault('${id}')">
+      <div class="vault-item"
+        data-vault-id="${id}"
+        onclick="selectVault('${id}')"
+        onmousedown="startVaultLongPress('${id}')"
+        onmouseup="cancelVaultLongPress()"
+        onmouseleave="cancelVaultLongPress()"
+        ontouchstart="startVaultLongPress('${id}')"
+        ontouchend="cancelVaultLongPress()">
+
         <div>
           <h3>${vault.name}</h3>
           <p>${locked ? "🔒 Bloqué" : "🔓 Libre"}</p>
-          ${
-            locked
-            ? `<small>Déblocage : ${new Date(vault.lockedUntil).toLocaleString()}</small>`
-            : `<small>Retrait disponible à tout moment</small>`
-          }
+          <small>
+            ${locked ? "Déblocage : " + new Date(vault.lockedUntil).toLocaleString() : "Retrait disponible à tout moment"}
+          </small>
         </div>
 
         <strong>${formatMoney(vault.balance || 0, cur)}</strong>
@@ -12412,31 +12630,6 @@ list.innerHTML = "";
     `;
   });
 }
-
-window.createVault = async function(){
-  const name = document.getElementById("newVaultName").value.trim();
-  const msg = document.getElementById("vaultMsg");
-
-  if(!name){
-    alert("❌ Donne un nom au coffre");
-    return;
-  }
-
-  const id = "vault_" + Date.now();
-
-  await update(ref(db, "users/" + currentUser.phone + "/vaults/" + id), {
-    name,
-    balance: 0,
-    lockedUntil: 0,
-    createdAt: Date.now(),
-    unlockRequest: null
-  });
-
-  document.getElementById("newVaultName").value = "";
-  document.getElementById("vaultCreateForm").classList.add("hidden");
-
-  await loadVaultStatus();
-};
 
 window.selectVault = async function(id){
   const panel = document.getElementById("vaultActionPanel");
@@ -12459,7 +12652,6 @@ window.selectVault = async function(id){
   if(!snap.exists()) return;
 
   const vault = snap.val();
-
   const card = document.querySelector(`[data-vault-id="${id}"]`);
 
   if(card){
@@ -12475,11 +12667,30 @@ window.selectVault = async function(id){
   }, 320);
 
   document.getElementById("activeVaultTitle").innerText = "🔐 " + vault.name;
-  document.getElementById("vaultMsg").innerText = "";
+
+  const msg = document.getElementById("vaultMsg");
+  const lockZone = document.getElementById("lockVaultZone");
+
+  const locked = vault.lockedUntil && Date.now() < Number(vault.lockedUntil);
+  const approved = vault.unlockRequest && vault.unlockRequest.status === "approved";
+
+  if(locked && !approved){
+    if(lockZone) lockZone.style.display = "none";
+
+    msg.innerText =
+      "🔒 Coffre bloqué jusqu’au " +
+      new Date(Number(vault.lockedUntil)).toLocaleString();
+  }else{
+    if(lockZone) lockZone.style.display = "block";
+    msg.innerText = "";
+  }
 };
 
 window.depositToSelectedVault = async function(){
-  if(!selectedVaultId) return;
+  if(!selectedVaultId){
+    alert("❌ Choisis d’abord un coffre");
+    return;
+  }
 
   const amount = Number(document.getElementById("vaultActionAmount").value);
   const msg = document.getElementById("vaultMsg");
@@ -12491,12 +12702,24 @@ window.depositToSelectedVault = async function(){
 
   const userRef = ref(db, "users/" + currentUser.phone);
   const snap = await get(userRef);
-  if(!snap.exists()) return;
+
+  if(!snap.exists()){
+    msg.innerText = "❌ Utilisateur introuvable";
+    return;
+  }
 
   const user = snap.val();
+
+  if(!user.vaults || !user.vaults[selectedVaultId]){
+    msg.innerText = "❌ Coffre introuvable";
+    return;
+  }
+
   const vault = user.vaults[selectedVaultId];
 
-  const disponible = Number(user.solde || 0) - Number(user.frozenBalance || 0);
+  const disponible =
+    Number(user.solde || 0) -
+    Number(user.frozenBalance || 0);
 
   if(disponible < amount){
     msg.innerText = "❌ Solde insuffisant";
@@ -12545,9 +12768,7 @@ window.withdrawFromSelectedVault = async function(){
   const vault = user.vaults[selectedVaultId];
 
   const locked = vault.lockedUntil && Date.now() < vault.lockedUntil;
-  const approved =
-    vault.unlockRequest &&
-    vault.unlockRequest.status === "approved";
+  const approved = vault.unlockRequest && vault.unlockRequest.status === "approved";
 
   if(locked && !approved){
     msg.innerText = "🔒 Coffre bloqué. Demande un déblocage au service.";
@@ -12588,6 +12809,21 @@ window.lockSelectedVault = async function(){
   const dateValue = document.getElementById("vaultLockDate").value;
   const msg = document.getElementById("vaultMsg");
 
+  const vaultRef = ref(db, "users/" + currentUser.phone + "/vaults/" + selectedVaultId);
+  const snap = await get(vaultRef);
+
+  if(!snap.exists()){
+    msg.innerText = "❌ Coffre introuvable";
+    return;
+  }
+
+  const vault = snap.val();
+
+  if(vault.lockedUntil && Date.now() < Number(vault.lockedUntil)){
+    msg.innerText = "❌ Ce coffre est déjà bloqué. Tu ne peux plus modifier la date.";
+    return;
+  }
+
   if(!dateValue){
     msg.innerText = "❌ Choisis une date";
     return;
@@ -12600,10 +12836,12 @@ window.lockSelectedVault = async function(){
     return;
   }
 
-  await update(ref(db, "users/" + currentUser.phone + "/vaults/" + selectedVaultId), {
+  await update(vaultRef, {
     lockedUntil: lockTime,
     unlockRequest: null
   });
+
+  document.getElementById("vaultLockDate").value = "";
 
   msg.innerText = "🔒 Coffre bloqué jusqu’à la date choisie";
 
@@ -12611,7 +12849,6 @@ window.lockSelectedVault = async function(){
 };
 
 window.requestVaultUnlock = async function(){
-
   const msg = document.getElementById("vaultMsg");
 
   if(!selectedVaultId){
@@ -12652,7 +12889,7 @@ window.requestVaultUnlock = async function(){
     vaultName: vault.name || "Coffre",
     amount: Number(vault.balance || 0),
     lockedUntil: Number(vault.lockedUntil),
-    message: "L’utilisateur a urgemment besoin de son argent et demande le déblocage du coffre avant son échéance.",
+    message: "L’utilisateur demande le déblocage du coffre avant son échéance.",
     status: "pending",
     createdAt: Date.now()
   });
@@ -12667,6 +12904,83 @@ window.requestVaultUnlock = async function(){
 
   msg.innerText = "✅ Demande envoyée au service";
 };
+
+window.startVaultLongPress = function(id){
+  cancelVaultLongPress();
+
+  vaultLongPressTimer = setTimeout(()=>{
+    showVaultDeleteConfirm(id);
+  }, 3000);
+};
+
+window.cancelVaultLongPress = function(){
+  if(vaultLongPressTimer){
+    clearTimeout(vaultLongPressTimer);
+    vaultLongPressTimer = null;
+  }
+};
+
+async function showVaultDeleteConfirm(id){
+  vaultDeleteTargetId = id;
+
+  const snap = await get(ref(db, "users/" + currentUser.phone + "/vaults/" + id));
+  if(!snap.exists()) return;
+
+  const vault = snap.val();
+
+  if(Number(vault.balance || 0) > 0){
+    alert("❌ Ce coffre contient encore de l’argent. Retire d’abord l’argent vers ton compte principal.");
+    vaultDeleteTargetId = null;
+    return;
+  }
+
+  const box = document.getElementById("vaultDeleteConfirm");
+  const text = document.getElementById("vaultDeleteText");
+
+  if(!box || !text){
+    const ok = confirm(`Supprimer le coffre "${vault.name}" ?`);
+    if(ok){
+      await deleteSelectedVault();
+    }
+    return;
+  }
+
+  text.innerText = `Supprimer le coffre "${vault.name}" ?`;
+  box.classList.remove("hidden");
+
+  document.getElementById("confirmDeleteVaultBtn").onclick = deleteSelectedVault;
+  document.getElementById("cancelDeleteVaultBtn").onclick = cancelDeleteVault;
+}
+
+window.cancelDeleteVault = function(){
+  vaultDeleteTargetId = null;
+
+  const box = document.getElementById("vaultDeleteConfirm");
+  if(box) box.classList.add("hidden");
+};
+
+async function deleteSelectedVault(){
+  if(!vaultDeleteTargetId) return;
+
+  const snap = await get(ref(db, "users/" + currentUser.phone + "/vaults/" + vaultDeleteTargetId));
+  if(!snap.exists()) return;
+
+  const vault = snap.val();
+
+  if(Number(vault.balance || 0) > 0){
+    alert("❌ Suppression impossible : ce coffre contient encore de l’argent.");
+    return;
+  }
+
+  await remove(ref(db, "users/" + currentUser.phone + "/vaults/" + vaultDeleteTargetId));
+
+  vaultDeleteTargetId = null;
+
+  const box = document.getElementById("vaultDeleteConfirm");
+  if(box) box.classList.add("hidden");
+
+  await loadVaultStatus();
+}
 
 // =========================
 // 📱 OUVRIR MODALE
